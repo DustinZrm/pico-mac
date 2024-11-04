@@ -29,6 +29,8 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdint.h>
+#include "hardware/i2c.h"
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
@@ -44,6 +46,8 @@
 #include "tusb.h"
 
 #include "umac.h"
+
+#include "ssd1306.h"
 
 #if USE_SD
 #include "f_util.h"
@@ -76,6 +80,20 @@ static void     io_init()
 {
         gpio_init(GPIO_LED_PIN);
         gpio_set_dir(GPIO_LED_PIN, GPIO_OUT);
+
+        /* OLED Display comm bus init */
+        i2c_init(i2c1, 400000);
+        gpio_set_function(GPIO_OLED_SDA, GPIO_FUNC_I2C);
+        gpio_set_function(GPIO_OLED_SCL, GPIO_FUNC_I2C);
+        gpio_pull_up(GPIO_OLED_SDA);
+        gpio_pull_up(GPIO_OLED_SCL);
+        /* OLED Display power from GPIO */
+        gpio_init(GPIO_OLED_GND);
+        gpio_set_dir(GPIO_OLED_GND, GPIO_OUT);
+        gpio_put(GPIO_OLED_GND, 0);
+        gpio_init(GPIO_OLED_VCC);
+        gpio_set_dir(GPIO_OLED_VCC, GPIO_OUT);
+        gpio_put(GPIO_OLED_VCC, 1);
 }
 
 static void     poll_led_etc()
@@ -270,6 +288,9 @@ int     main()
 	stdio_init_all();
         io_init();
 
+        /* OLED Display init */
+        oledInit();
+
         multicore_launch_core1(core1_main);
 
 	printf("Starting, init usb\n");
@@ -280,8 +301,54 @@ int     main()
                 tuh_task();
                 hid_app_task();
                 poll_led_etc();
+
+                /* OLED Display update framebuffer */
+                oledWriteFB(umac_ram + umac_get_fb_offset());
 	}
 
 	return 0;
 }
 
+
+/* OLED Display */
+static ssd1306_t disp;
+
+void oledInit(void)
+{
+	disp.external_vcc=false;
+	ssd1306_init(&disp, 128, 64, 0x3C, i2c1);
+	ssd1306_clear(&disp);	
+}
+
+void oledWriteFB(uint8_t *fb_in)
+{
+	ssd1306_clear(&disp);
+	
+	/* FIXME: mouse movements are relative once the pointer hits an edge causing screen scrolling to drift away from the actual pointer */
+	int mouse_x;
+	int mouse_y;
+	
+	for (int h = 0; h < 63; h++)
+	{
+		for (int w = 0; w < 127; w++)
+		{
+			if (( umac_cursor_x >= 0 ) && ( umac_cursor_x <= (512 - 128)))
+			{
+				/* 1 bit screen scrolling */
+				mouse_x = umac_cursor_x / 1;
+			}
+			if (( umac_cursor_y >= 0 ) && ( umac_cursor_y <= (342 - 64)))
+			{
+				/* 1 bit screen scrolling */
+				mouse_y = umac_cursor_y / 1;
+			}
+				/* 1 bit screen scrolling */
+			int bit = ((h + (1 * mouse_y)) * 512) + (w + (1 * mouse_x));
+			if (((fb_in[bit / 8] >> (7 - bit % 8)) & 1) == 0)
+			{
+				ssd1306_draw_pixel(&disp, w, h);
+			}
+		}
+	}
+	ssd1306_show(&disp);
+}
